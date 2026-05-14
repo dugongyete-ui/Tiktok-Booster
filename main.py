@@ -236,16 +236,18 @@ class TikTokBooster:
                         print(f"{ProgramUsage.Translations("errors",0)}")
                 except ValueError:
                     print(f"{ProgramUsage.Translations("errors",1)}")
+        # If user did not pick from history, always ask for a fresh URL
+        if self.history_selected is not True:
+            VIDEO = input(f"{Fore.BLUE}Enter TikTok Video URL -> {Fore.WHITE}").strip()
+
         while True:
             try:
                 self.tiktok_info = TikTokVideoInfo(VIDEO)
-                ProgramUsage.change_video_url(VIDEO)
                 break
             except ValueError:
                 os.system("cls") if os.name == 'nt' else os.system("clear")
-                if self.history_selected == None:
-                    print(f"{WARNING}{ProgramUsage.Translations("errors",2)}{Fore.BLUE}\nOLD URL : {Fore.WHITE}{VIDEO}")
-                VIDEO = input(f"{Fore.BLUE}{ProgramUsage.Translations("errors",3)}{Fore.WHITE}")
+                print(f"{WARNING}Invalid URL. Example: https://www.tiktok.com/@username/video/123456{Style.RESET_ALL}")
+                VIDEO = input(f"{Fore.BLUE}Enter TikTok Video URL -> {Fore.WHITE}").strip()
         self.counter = 0
         self.webhook = WEBHOOK
         self.webhook_text = WEBHOOK
