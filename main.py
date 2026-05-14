@@ -223,6 +223,12 @@ class TikTokBooster:
                             f"{Fore.WHITE}{Style.BRIGHT}Views: {Style.RESET_ALL}{Fore.LIGHTYELLOW_EX}{record['views_before']} {Fore.WHITE}-> {Fore.GREEN}{record['views_after']} {Fore.RESET}\n"
                             f"{Fore.WHITE}{Style.BRIGHT}Last Time Used: {Style.RESET_ALL}{record['last_time_used']}{Fore.RESET}")
                         
+                if AUTO_START:
+                    print(f"{INFO}AUTO_START enabled — skipping history selection, using config URL.{Style.RESET_ALL}")
+                    self.history_selected = False
+                    VIDEO = ""
+                    break
+
                 try:
                     choice = int(input(f"\n{ProgramUsage.Translations("history",1)}{Fore.RED} {ProgramUsage.Translations("history",2)} {Style.RESET_ALL}"))
                     if choice == 0:
@@ -815,13 +821,23 @@ class TikTokBooster:
         return self.driver.execute_script(script)
 
     def _js_fill_input(self, value, timeout=10):
-        """Clear and fill the first visible input field in the active panel."""
+        """Clear and fill the first visible input inside the active Zefoy panel.
+        Skips inputs that are inside a <form> element (those belong to captcha).
+        """
         script = """
         var inputs = document.querySelectorAll('input');
         for (var i = 0; i < inputs.length; i++) {
             var inp = inputs[i];
             var st = window.getComputedStyle(inp);
             if (st.display === 'none' || st.visibility === 'hidden') continue;
+            // Skip inputs inside a <form> — those are captcha fields, not the video URL field
+            var inForm = false;
+            var p = inp.parentElement;
+            while (p) {
+                if (p.tagName && p.tagName.toLowerCase() === 'form') { inForm = true; break; }
+                p = p.parentElement;
+            }
+            if (inForm) continue;
             inp.focus();
             inp.value = arguments[0];
             inp.dispatchEvent(new Event('input', {bubbles: true}));
@@ -1324,7 +1340,32 @@ class TikTokBooster:
                 for _ in range(AMOUNT):
                     self.User_Session.send_heartbeat()
                     self.remove_ads_vignette()
-                    os.system("cls") if os.name == 'nt' else os.system("clear")
+
+                    # ── Mid-session captcha check ──────────────────────────────
+                    captcha_visible = self.driver.execute_script("""
+                        var imgs = document.querySelectorAll('form img');
+                        for (var i = 0; i < imgs.length; i++) {
+                            var st = window.getComputedStyle(imgs[i]);
+                            if (st.display !== 'none' && st.visibility !== 'hidden') return true;
+                        }
+                        return false;
+                    """)
+                    if captcha_visible:
+                        print(f"{WARNING}[CAPTCHA] Mid-session captcha detected — solving...{Style.RESET_ALL}")
+                        self._handle_captcha()
+                        time.sleep(2)
+                        self.remove_modal()
+                        # Re-click the Views button after captcha
+                        self._click_type_button()
+                        time.sleep(1)
+                        # Re-fill URL
+                        self._js_fill_input(VIDEO, timeout=15)
+
+                    # Only clear screen when not headless (so logs aren't wiped)
+                    if not AUTO_START and os.name == 'nt':
+                        os.system("cls")
+                    elif not AUTO_START:
+                        os.system("clear")
                     self._show_banner(self.index)
                     time.sleep(0.5)
 
@@ -1415,13 +1456,45 @@ class TikTokBooster:
                                       'favorites': 100, 'hearts': 10}
                         msg_keys   = {'views': 4, 'shares': 5,
                                       'favorites': 6, 'hearts': 7}
+
+                        # ── Verify Zefoy accepted the request ─────────────────
+                        time.sleep(2)
+                        zefoy_response = self.driver.execute_script("""
+                            var texts = [];
+                            document.querySelectorAll('div,p,span,h1,h2,h3,h4,h5,h6,small').forEach(function(el) {
+                                var st = window.getComputedStyle(el);
+                                if (st.display === 'none' || st.visibility === 'hidden') return;
+                                var t = el.innerText ? el.innerText.trim() : '';
+                                if (t.length > 3 && t.length < 200 &&
+                                    el.children.length === 0) {
+                                    texts.push(t);
+                                }
+                            });
+                            return texts.slice(0, 20).join(' | ');
+                        """) or ""
+                        zr_lower = zefoy_response.lower()
+                        sent_ok = any(w in zr_lower for w in [
+                            'success', 'sent', 'submitted', 'processing',
+                            'added', 'complete', 'done', 'thank'
+                        ])
+                        failed = any(w in zr_lower for w in [
+                            'error', 'invalid', 'failed', 'not found', 'wrong'
+                        ])
+
                         if TYPE in increments:
-                            print(
-                                f"{datetime.now().strftime('%H:%M:%S')} "
-                                f"{SUCCESS}{Fore.WHITE}"
-                                f"{ProgramUsage.Translations('main', msg_keys[TYPE])}"
-                                f"{Style.RESET_ALL}")
-                            self.counter += increments[TYPE]
+                            ts = datetime.now().strftime('%H:%M:%S')
+                            if not failed:
+                                print(
+                                    f"{ts} "
+                                    f"{SUCCESS}{Fore.WHITE}"
+                                    f"{ProgramUsage.Translations('main', msg_keys[TYPE])}"
+                                    f"{Style.RESET_ALL}", flush=True)
+                                self.counter += increments[TYPE]
+                            else:
+                                print(f"{ts} {WARNING}[Submit] Zefoy returned error — "
+                                      f"response: {zefoy_response[:120]}{Style.RESET_ALL}", flush=True)
+
+                        print(f"{INFO}[Zefoy response] {zefoy_response[:150]}{Style.RESET_ALL}", flush=True)
 
                         if self.is_webhook_valid and self.counter >= self.each_views:
                             self.webhook.post(content=self.message)
@@ -1430,9 +1503,9 @@ class TikTokBooster:
                     except Exception as e:
                         if "element click intercepted" in str(e).lower():
                             print(f"{Fore.RED}[Error] Click intercepted — "
-                                  f"try HEADLESS=False in config.cfg (ERROR 000){Style.RESET_ALL}")
+                                  f"try HEADLESS=False in config.cfg (ERROR 000){Style.RESET_ALL}", flush=True)
                         else:
-                            print(f"{Fore.RED}[Error] {e}{Style.RESET_ALL}")
+                            print(f"{Fore.RED}[Error] {e}{Style.RESET_ALL}", flush=True)
                         self.driver.refresh()
                         time.sleep(2)
                         self._select_type()
