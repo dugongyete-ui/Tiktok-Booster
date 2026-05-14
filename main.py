@@ -79,6 +79,7 @@ WARNING = f"{Fore.RED}[WARNING] "
 
 SLEEP = 15
 SKIP_WEBHOOK_VERIFICATION = config.getboolean('Settings', 'SKIP_WEBHOOK_CONFIGURATION')
+AUTO_START = config.getboolean('Settings', 'AUTO_START', fallback=False)
 
 OPERATING_SYSTEM = platform.system()
 
@@ -236,9 +237,14 @@ class TikTokBooster:
                         print(f"{ProgramUsage.Translations("errors",0)}")
                 except ValueError:
                     print(f"{ProgramUsage.Translations("errors",1)}")
-        # If user did not pick from history, always ask for a fresh URL
+        # If user did not pick from history, check config or ask for URL
         if self.history_selected is not True:
-            VIDEO = input(f"{Fore.BLUE}Enter TikTok Video URL -> {Fore.WHITE}").strip()
+            config_url = config.get('Settings', 'VIDEO_URL').strip()
+            if config_url:
+                VIDEO = config_url
+                print(f"{INFO}Using URL from config: {Fore.WHITE}{VIDEO}{Style.RESET_ALL}")
+            else:
+                VIDEO = input(f"{Fore.BLUE}Enter TikTok Video URL -> {Fore.WHITE}").strip()
 
         while True:
             try:
@@ -348,9 +354,13 @@ class TikTokBooster:
                 version_main=138,
             )
             self.driver = _uc_driver
+            self._use_uc = True
+            self._uc_options = uc_options
+            self._uc_driver_path = driver_path
             print(f"{INFO}Using undetected_chromedriver (best Cloudflare bypass){Style.RESET_ALL}")
         except Exception as uc_err:
             print(f"{WARNING}undetected_chromedriver failed ({uc_err}), falling back to selenium-stealth{Style.RESET_ALL}")
+            self._use_uc = False
             self.options = webdriver.ChromeOptions()
             safe_options = [
                 "--window-size=1920,1080",
@@ -975,6 +985,21 @@ class TikTokBooster:
 
         print(f"{Fore.CYAN}About to click submit button...{Style.RESET_ALL}")
 
+        # Force-remove any modal overlays that may block the click
+        self.driver.execute_script("""
+            // Remove all modal backdrops and visible modals blocking the form
+            document.querySelectorAll(
+                '.modal-backdrop, .fc-dialog-overlay, [id="zbcd"], .modal.show, .modal.fade.show'
+            ).forEach(function(el) {
+                el.style.display = 'none';
+                el.remove();
+            });
+            // Also restore body scroll which Bootstrap modals disable
+            document.body.classList.remove('modal-open');
+            document.body.style.overflow = '';
+            document.body.style.paddingRight = '';
+        """)
+        time.sleep(0.5)
         self.remove_modal()
         self.remove_ads_vignette()
 
@@ -1001,7 +1026,9 @@ class TikTokBooster:
             
         try:
             time.sleep(2)
-            submit_btn.click()
+            # Use JS click to bypass any remaining overlay interception
+            self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", submit_btn)
+            self.driver.execute_script("arguments[0].click();", submit_btn)
             print(f"{Fore.GREEN}✅ Submit clicked successfully, verifying...{Style.RESET_ALL}") 
         except Exception as click_err:
             print(f"{Fore.RED}❌ Click failed: {Fore.WHITE}{click_err}{Style.RESET_ALL}")
@@ -1081,23 +1108,29 @@ class TikTokBooster:
 
     def _reset_browser(self):
         self.User_Session.send_heartbeat()
-        """Closes and restarts the browser with stealth, then re-logs in to zefoy."""
+        """Closes and restarts the browser, then re-logs in to zefoy."""
         try:
             self.driver.quit()
         except Exception as e:
             print(f"{WARNING}Error while closing the browser: {e}")
 
-        # Re-create with the same options (already has stealth flags)
-        self.driver = webdriver.Chrome(options=self.options)
-        stealth(
-            self.driver,
-            languages=["en-US", "en"],
-            vendor="Google Inc.",
-            platform="Win32",
-            webgl_vendor="Intel Inc.",
-            renderer="Intel Iris OpenGL Engine",
-            fix_hairline=True,
-        )
+        if getattr(self, '_use_uc', False):
+            try:
+                import undetected_chromedriver as uc
+                self.driver = uc.Chrome(
+                    options=self._uc_options,
+                    driver_executable_path=getattr(self, '_uc_driver_path', None),
+                    use_subprocess=False,
+                    version_main=138,
+                )
+                print(f"{INFO}Browser reset via undetected_chromedriver{Style.RESET_ALL}")
+            except Exception as e:
+                print(f"{WARNING}UC reset failed ({e}), falling back to stealth{Style.RESET_ALL}")
+                self._use_uc = False
+                self._init_stealth_driver()
+        else:
+            self._init_stealth_driver()
+
         self.driver.get('https://zefoy.com/')
         self._wait_for_cloudflare(timeout=150)
         while not self._handle_captcha():
@@ -1106,8 +1139,28 @@ class TikTokBooster:
         time.sleep(1)
         self._check_available()
 
+    def _init_stealth_driver(self):
+        """Create a new Selenium + stealth Chrome driver."""
+        if not hasattr(self, 'options') or self.options is None:
+            self.options = webdriver.ChromeOptions()
+            for opt in ["--window-size=1920,1080","--disable-gpu","--no-sandbox",
+                        "--disable-dev-shm-usage","--enable-unsafe-swiftshader","--log-level=3",
+                        "--disable-blink-features=AutomationControlled","--disable-extensions"]:
+                self.options.add_argument(opt)
+            if OPERATING_SYSTEM == "Linux" and os.path.exists(Static.ChromeBinaryPath):
+                self.options.binary_location = Static.ChromeBinaryPath
+        if OPERATING_SYSTEM == "Linux" and os.path.exists(Static.ChromeDriverPath):
+            from selenium.webdriver.chrome.service import Service
+            service = Service(executable_path=Static.ChromeDriverPath)
+            self.driver = webdriver.Chrome(service=service, options=self.options)
+        else:
+            self.driver = webdriver.Chrome(options=self.options)
+        stealth(self.driver, languages=["en-US","en"], vendor="Google Inc.",
+                platform="Win32", webgl_vendor="Intel Inc.",
+                renderer="Intel Iris OpenGL Engine", fix_hairline=True)
+
     def _click_type_button(self):
-        """Click the service-type button using JS DOM (text-based, layout-independent)."""
+        """Click the service-type button using multiple strategies."""
         type_keywords = {
             'views':     ['video views', 'views'],
             'hearts':    ['hearts', 'likes'],
@@ -1117,21 +1170,53 @@ class TikTokBooster:
             'repost':    ['repost'],
         }
         kws = type_keywords.get(TYPE, [TYPE])
-        print(f"{INFO}Looking for '{TYPE}' button via JS DOM (keywords: {kws})…{Style.RESET_ALL}")
-        # First attempt: pure JS DOM
-        if self._js_click_button(kws, timeout=12):
-            print(f"{INFO}Clicked '{TYPE}' button via JS DOM{Style.RESET_ALL}")
+        print(f"{INFO}Looking for '{TYPE}' button (keywords: {kws})…{Style.RESET_ALL}")
+
+        # Strategy 1: button text matches keyword
+        if self._js_click_button(kws, timeout=5):
+            print(f"{INFO}Clicked '{TYPE}' button via button-text match{Style.RESET_ALL}")
             return True
-        # Fallback: try legacy XPATH
+
+        # Strategy 2: find any clickable element whose PARENT CONTAINER has keyword text
+        # Covers cases where text is in a label above the → arrow button
+        found = self.driver.execute_script("""
+            var kws = arguments[0];
+            // Search buttons whose nearest ancestor card contains any keyword
+            var btns = document.querySelectorAll('button, [role="button"], a[onclick]');
+            for (var i = 0; i < btns.length; i++) {
+                var btn = btns[i];
+                // Walk up to 5 parent levels
+                var el = btn;
+                for (var d = 0; d < 5; d++) {
+                    if (!el || !el.parentElement) break;
+                    el = el.parentElement;
+                    var txt = el.textContent.trim().toLowerCase();
+                    for (var j = 0; j < kws.length; j++) {
+                        if (txt.indexOf(kws[j]) !== -1) {
+                            btn.scrollIntoView({block:'center'});
+                            btn.click();
+                            return kws[j];
+                        }
+                    }
+                }
+            }
+            return null;
+        """, kws)
+        if found:
+            print(f"{INFO}Clicked '{TYPE}' button via parent-container text ('{found}'){Style.RESET_ALL}")
+            return True
+
+        # Strategy 3: try legacy XPATH
         try:
             btn = WebDriverWait(self.driver, 5).until(
                 ec.presence_of_element_located((By.XPATH, Static.typeValues[TYPE])))
             self.driver.execute_script("arguments[0].click();", btn)
-            print(f"{INFO}Clicked '{TYPE}' button via XPATH fallback{Style.RESET_ALL}")
+            print(f"{INFO}Clicked '{TYPE}' button via XPATH{Style.RESET_ALL}")
             return True
         except Exception:
             pass
-        # Last resort: dump buttons so we can see what IS on page
+
+        # Last resort: dump all buttons for debug info
         all_btns = self._js_dump_buttons()
         print(f"{WARNING}Button '{TYPE}' not found. Buttons on page: {all_btns}{Style.RESET_ALL}")
         return False
@@ -1372,22 +1457,27 @@ class TikTokBooster:
                 ec.presence_of_element_located((By.XPATH, Static.readyValues[TYPE]))).text) <= 0
     def _show_typeconfig(self):
         global TYPE
-        us = 0
-        def available_color(type):
-            if type in self.elements:
+        def available_color(t):
+            if t in self.elements:
                 return Fore.GREEN
             return Fore.RED
-        """Show the program configuration menu"""
         os.system("cls") if os.name == 'nt' else os.system("clear")
         print("Type Configuration : \n")
-        print(f"{available_color('views')}[{'1' if available_color('views') == Fore.GREEN else '-'}] {'Views'} {f'[{ProgramUsage.Translations("main",9)}]' if TYPE.lower() == 'views' else ''}")
-        print(f"{available_color('followers')}[{'2' if available_color('followers') == Fore.GREEN else '-'}] {'Followers'} {f'[{ProgramUsage.Translations("main",9)}]' if TYPE.lower() == 'followers' else ''}")
-        print(f"{available_color('favorites')}[{'3' if available_color('favorites') == Fore.GREEN else '-'}] {'Favorites'} {f'[{ProgramUsage.Translations("main",9)}]' if TYPE.lower() == 'favorites' else ''}")
-        print(f"{available_color('shares')}[{'4' if available_color('shares') == Fore.GREEN else '-'}] {'Shares'} {f'[{ProgramUsage.Translations("main",9)}]' if TYPE.lower() == 'shares' else ''}")
-        print(f"{available_color('hearts')}[{'5' if available_color('hearts') == Fore.GREEN else '-'}] {'Hearts'} {f'[{ProgramUsage.Translations("main",9)}]' if TYPE.lower() == 'hearts' else ''}")
-        print(f"{available_color('repost')}[{'6' if available_color('repost') == Fore.GREEN else '-'}] {f'Repost {Fore.YELLOW} [NEW!!] {Style.RESET_ALL}'} {f'[{ProgramUsage.Translations("main",9)}]' if TYPE.lower() == 'repost' else ''}")
-        print(Fore.CYAN,f"\n[99] - {ProgramUsage.Translations("main",8)}!",Style.RESET_ALL)
+        _sel = ProgramUsage.Translations('main', 9)
+        print(f"{available_color('views')}[{'1' if available_color('views') == Fore.GREEN else '-'}] Views {f'[{_sel}]' if TYPE.lower() == 'views' else ''}")
+        print(f"{available_color('followers')}[{'2' if available_color('followers') == Fore.GREEN else '-'}] Followers {f'[{_sel}]' if TYPE.lower() == 'followers' else ''}")
+        print(f"{available_color('favorites')}[{'3' if available_color('favorites') == Fore.GREEN else '-'}] Favorites {f'[{_sel}]' if TYPE.lower() == 'favorites' else ''}")
+        print(f"{available_color('shares')}[{'4' if available_color('shares') == Fore.GREEN else '-'}] Shares {f'[{_sel}]' if TYPE.lower() == 'shares' else ''}")
+        print(f"{available_color('hearts')}[{'5' if available_color('hearts') == Fore.GREEN else '-'}] Hearts {f'[{_sel}]' if TYPE.lower() == 'hearts' else ''}")
+        print(f"{available_color('repost')}[{'6' if available_color('repost') == Fore.GREEN else '-'}] Repost {Fore.YELLOW}[NEW!!]{Style.RESET_ALL} {f'[{_sel}]' if TYPE.lower() == 'repost' else ''}")
+
+        if AUTO_START:
+            print(f"{INFO}AUTO_START enabled — using TYPE from config: {Fore.WHITE}{TYPE}{Style.RESET_ALL}")
+            return
+
+        print(Fore.CYAN, f"\n[99] - {ProgramUsage.Translations('main',8)}!", Style.RESET_ALL)
         print("\n")
+        us = 0
         while True:
             try:
                 us = int(input(f"{WAITING}Select an option \n-> {Style.RESET_ALL}").lower())
@@ -1425,6 +1515,10 @@ class TikTokBooster:
         InitialInfo.CREATOR = self.tiktok_info.get_video_info(Creator=True)
         InitialInfo.VIEWS_BEFORE = self.tiktok_info.get_video_info(Views=True)
         Handler.info_banner(_gather_info('views'),_gather_info('shares'),_gather_info('likes'),AMOUNT,INFO,_gather_info('creator'),TYPE) # Show Info Banner
+
+        if AUTO_START:
+            print(f"{INFO}AUTO_START enabled — starting automatically...{Style.RESET_ALL}")
+            return
 
         while True:
             us = input(f"{WAITING}Want to start? (y/n)\n-> {Style.RESET_ALL}").lower()
