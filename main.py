@@ -3,6 +3,19 @@ import configparser
 import subprocess
 import os
 import sys
+
+# ── distutils shim (Python 3.12 removed distutils; setuptools provides it) ──
+try:
+    import distutils  # noqa: F401
+except ImportError:
+    try:
+        import setuptools as _st
+        sys.modules['distutils'] = _st._distutils
+        sys.modules['distutils.version'] = _st._distutils.version
+    except Exception:
+        pass
+# ─────────────────────────────────────────────────────────────────────────────
+
 import cv2
 import zipfile
 import tempfile
@@ -265,6 +278,7 @@ class TikTokBooster:
         # Running Chromium in true non-headless mode via Xvfb bypasses most
         # Cloudflare Turnstile bot-detection that rejects headless browsers.
         self._vdisplay = None
+        self._xvfb_display = None  # tracks the actual :N display number
         xvfb_bin = "/nix/store/ykck7gdd6szwrb3qnpb5y5fvjlnmzhz0-xorg-server-21.1.18/bin/Xvfb"
         use_virtual_display = (
             OPERATING_SYSTEM == "Linux"
@@ -275,13 +289,16 @@ class TikTokBooster:
                 if _VDISPLAY_AVAILABLE:
                     self._vdisplay = VirtualDisplay(visible=False, size=(1920, 1080))
                     self._vdisplay.start()
-                    print(f"{INFO}Virtual display started (pyvirtualdisplay){Style.RESET_ALL}")
+                    # pyvirtualdisplay sets DISPLAY env automatically; record it
+                    self._xvfb_display = os.environ.get("DISPLAY", ":1")
+                    print(f"{INFO}Virtual display started (pyvirtualdisplay) on {self._xvfb_display}{Style.RESET_ALL}")
                 else:
                     # Fallback: launch Xvfb manually
                     self._xvfb_proc = subprocess.Popen(
                         [xvfb_bin, ":99", "-screen", "0", "1920x1080x24"],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     os.environ["DISPLAY"] = ":99"
+                    self._xvfb_display = ":99"
                     time.sleep(1)
                     print(f"{INFO}Virtual display started (Xvfb manual){Style.RESET_ALL}")
                 # Override: don't add headless flag — real display is available
@@ -292,43 +309,83 @@ class TikTokBooster:
                 is_headless = config.getboolean('Settings', 'HEADLESS')
         # ─────────────────────────────────────────────────────────────────────
 
-        self.options = webdriver.ChromeOptions()
-        safe_options = [
-            "--window-size=1920,1080",
-            "--disable-gpu",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--enable-unsafe-swiftshader",
-            "--log-level=3",
-            "--disable-blink-features=AutomationControlled",
-            "--exclude-switches=enable-automation",
-            "--disable-extensions",
-        ]
-        for option in safe_options:
-            self.options.add_argument(option)
-        if is_headless:
-            self.options.add_argument("--headless=new")
-        else:
-            # Non-headless needs display set
-            if use_virtual_display and "DISPLAY" not in os.environ:
-                os.environ.setdefault("DISPLAY", ":99")
-        if OPERATING_SYSTEM == "Linux" and os.path.exists(Static.ChromeBinaryPath):
-            self.options.binary_location = Static.ChromeBinaryPath
-        if OPERATING_SYSTEM == "Linux" and os.path.exists(Static.ChromeDriverPath):
-            from selenium.webdriver.chrome.service import Service
-            service = Service(executable_path=Static.ChromeDriverPath)
-            self.driver = webdriver.Chrome(service=service, options=self.options)
-        else:
-            self.driver = webdriver.Chrome(options=self.options)
-        stealth(
-            self.driver,
-            languages=["en-US", "en"],
-            vendor="Google Inc.",
-            platform="Win32",
-            webgl_vendor="Intel Inc.",
-            renderer="Intel Iris OpenGL Engine",
-            fix_hairline=True,
-        )
+        # ── Try undetected_chromedriver first (best Cloudflare bypass) ────────
+        _uc_driver = None
+        try:
+            import undetected_chromedriver as uc
+            import shutil as _shutil
+            uc_options = uc.ChromeOptions()
+            uc_safe = [
+                "--window-size=1920,1080",
+                "--disable-gpu",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--enable-unsafe-swiftshader",
+                "--log-level=3",
+                "--disable-notifications",
+                "--disable-popup-blocking",
+            ]
+            for opt in uc_safe:
+                uc_options.add_argument(opt)
+            if is_headless:
+                uc_options.add_argument("--headless=new")
+            if OPERATING_SYSTEM == "Linux" and os.path.exists(Static.ChromeBinaryPath):
+                uc_options.binary_location = Static.ChromeBinaryPath
+            # UC patches the chromedriver binary; nix store is read-only so copy first
+            driver_path = None
+            if OPERATING_SYSTEM == "Linux" and os.path.exists(Static.ChromeDriverPath):
+                _tmp_driver = os.path.join(tempfile.gettempdir(), "chromedriver_uc")
+                if not os.path.exists(_tmp_driver):
+                    _shutil.copy2(Static.ChromeDriverPath, _tmp_driver)
+                    os.chmod(_tmp_driver, 0o755)
+                driver_path = _tmp_driver
+            _uc_driver = uc.Chrome(
+                options=uc_options,
+                driver_executable_path=driver_path,
+                use_subprocess=False,
+                version_main=138,
+            )
+            self.driver = _uc_driver
+            print(f"{INFO}Using undetected_chromedriver (best Cloudflare bypass){Style.RESET_ALL}")
+        except Exception as uc_err:
+            print(f"{WARNING}undetected_chromedriver failed ({uc_err}), falling back to selenium-stealth{Style.RESET_ALL}")
+            self.options = webdriver.ChromeOptions()
+            safe_options = [
+                "--window-size=1920,1080",
+                "--disable-gpu",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--enable-unsafe-swiftshader",
+                "--log-level=3",
+                "--disable-blink-features=AutomationControlled",
+                "--exclude-switches=enable-automation",
+                "--disable-extensions",
+            ]
+            for option in safe_options:
+                self.options.add_argument(option)
+            if is_headless:
+                self.options.add_argument("--headless=new")
+            else:
+                if use_virtual_display and "DISPLAY" not in os.environ:
+                    os.environ.setdefault("DISPLAY", self._xvfb_display or ":1")
+            if OPERATING_SYSTEM == "Linux" and os.path.exists(Static.ChromeBinaryPath):
+                self.options.binary_location = Static.ChromeBinaryPath
+            if OPERATING_SYSTEM == "Linux" and os.path.exists(Static.ChromeDriverPath):
+                from selenium.webdriver.chrome.service import Service
+                service = Service(executable_path=Static.ChromeDriverPath)
+                self.driver = webdriver.Chrome(service=service, options=self.options)
+            else:
+                self.driver = webdriver.Chrome(options=self.options)
+            stealth(
+                self.driver,
+                languages=["en-US", "en"],
+                vendor="Google Inc.",
+                platform="Win32",
+                webgl_vendor="Intel Inc.",
+                renderer="Intel Iris OpenGL Engine",
+                fix_hairline=True,
+            )
+        # ─────────────────────────────────────────────────────────────────────
 
 
         self.driver.get('https://zefoy.com/')
@@ -468,30 +525,56 @@ class TikTokBooster:
         """
         Try to click the Cloudflare Turnstile checkbox.
         Strategy order:
-          1. PyAutoGUI — true X11 mouse events on the Xvfb display (hardest to detect)
+          1. xdotool — real X11 mouse events (hardest to detect, no tkinter dep)
           2. Selenium ActionChains — coordinate click on body
           3. JS elementFromPoint
         """
         from selenium.webdriver.common.action_chains import ActionChains
 
-        # ── Strategy 1: PyAutoGUI (X11 events — most human-like) ──────────────
+        # ── Strategy 1: xdotool (X11 events — most human-like, no tkinter) ───
         try:
-            import pyautogui
-            import os as _os
-            # Make sure DISPLAY is set to where Chromium is running
-            disp = _os.environ.get("DISPLAY", ":1")
-            _os.environ["DISPLAY"] = disp
-            pyautogui.FAILSAFE = False
-            # Turnstile checkbox is at approximately (281, 177) in the browser window
-            # Move mouse naturally then click
-            pyautogui.moveTo(100, 100, duration=0.5)
-            pyautogui.moveTo(281, 177, duration=0.8)
-            import time as _t; _t.sleep(0.2)
-            pyautogui.click(281, 177)
-            print(f"{INFO}Turnstile: PyAutoGUI click at (281, 177){Style.RESET_ALL}")
+            disp = getattr(self, '_xvfb_display', None) or os.environ.get("DISPLAY", ":1")
+            xdotool = "/nix/store/k9h3c1q6cvl819cl933wss1nbl58wqcw-xdotool-3.20211022.1/bin/xdotool"
+            if not os.path.exists(xdotool):
+                xdotool = "xdotool"
+            env = dict(os.environ, DISPLAY=disp)
+            # Capture current screenshot to detect real checkbox position
+            # Fallback: known coords at 1920x1080 — checkbox center ~(577, 452)
+            cx, cy = 577, 452
+            try:
+                import tempfile as _tf, cv2 as _cv2
+                _ss = os.path.join(_tf.gettempdir(), "cf_pos_check.png")
+                subprocess.run(["scrot", _ss], env=env, timeout=5, capture_output=True)
+                _img = _cv2.imread(_ss, _cv2.IMREAD_GRAYSCALE)
+                if _img is not None:
+                    h, w = _img.shape
+                    # checkbox is in top-left quadrant, scan for it
+                    roi = _img[int(h*0.3):int(h*0.6), int(w*0.1):int(w*0.6)]
+                    _, _thresh = _cv2.threshold(roi, 200, 255, _cv2.THRESH_BINARY)
+                    _cnts, _ = _cv2.findContours(_thresh, _cv2.RETR_EXTERNAL, _cv2.CHAIN_APPROX_SIMPLE)
+                    _sq = [c for c in _cnts if 200 < _cv2.contourArea(c) < 5000]
+                    if _sq:
+                        _M = _cv2.moments(_sq[0])
+                        if _M["m00"]:
+                            rx = int(_M["m10"]/_M["m00"]) + int(w*0.1)
+                            ry = int(_M["m01"]/_M["m00"]) + int(h*0.3)
+                            cx, cy = rx, ry
+                            print(f"{INFO}Turnstile: detected checkbox at ({cx},{cy}){Style.RESET_ALL}")
+            except Exception:
+                pass
+            # Move mouse naturally then click at Turnstile checkbox position
+            subprocess.run([xdotool, "mousemove", "--sync", "100", "100"],
+                           env=env, timeout=3, capture_output=True)
+            time.sleep(0.3)
+            subprocess.run([xdotool, "mousemove", "--sync", str(cx), str(cy)],
+                           env=env, timeout=3, capture_output=True)
+            time.sleep(0.2)
+            subprocess.run([xdotool, "click", "1"],
+                           env=env, timeout=3, capture_output=True)
+            print(f"{INFO}Turnstile: xdotool click at ({cx},{cy}) on {disp}{Style.RESET_ALL}")
             return True
-        except Exception as pae:
-            print(f"{INFO}PyAutoGUI failed: {pae}{Style.RESET_ALL}")
+        except Exception as xde:
+            print(f"{INFO}xdotool failed: {xde}{Style.RESET_ALL}")
 
         try:
             iframes = self.driver.find_elements(By.TAG_NAME, 'iframe')
@@ -636,12 +719,31 @@ class TikTokBooster:
         deadline = time.time() + timeout
         attempt = 0
         while time.time() < deadline:
-            title = self.driver.title
-            url   = self.driver.current_url
-            if ("just a moment" not in title.lower()
-                    and "challenges.cloudflare.com" not in url):
-                print(f"{INFO}Cloudflare passed ✔  Page: {title}{Style.RESET_ALL}")
-                return True
+            try:
+                # Dismiss any unexpected alerts (e.g. notification prompts)
+                try:
+                    alert = self.driver.switch_to.alert
+                    alert.dismiss()
+                    print(f"{INFO}Dismissed browser alert{Style.RESET_ALL}")
+                except Exception:
+                    pass
+                title = self.driver.title
+                url   = self.driver.current_url
+                if ("just a moment" not in title.lower()
+                        and "challenges.cloudflare.com" not in url):
+                    print(f"{INFO}Cloudflare passed ✔  Page: {title}{Style.RESET_ALL}")
+                    return True
+            except UnexpectedAlertPresentException:
+                try:
+                    self.driver.switch_to.alert.dismiss()
+                except Exception:
+                    pass
+                time.sleep(1)
+                continue
+            except Exception as we:
+                print(f"{WARNING}Cloudflare check error: {we}{Style.RESET_ALL}")
+                time.sleep(2)
+                continue
             # Every ~5 s try clicking the Turnstile
             if attempt % 3 == 0:
                 self._try_click_turnstile()
