@@ -6,6 +6,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
 echo -e "${BLUE}============================================${NC}"
@@ -14,150 +15,263 @@ echo -e "${BLUE}============================================${NC}"
 
 OS="$(uname -s)"
 
-# ── Detect package manager ────────────────────────────────────────────────────
-if command -v apt-get &>/dev/null; then
-    PKG_MANAGER="apt"
-elif command -v dnf &>/dev/null; then
-    PKG_MANAGER="dnf"
-elif command -v pacman &>/dev/null; then
-    PKG_MANAGER="pacman"
-elif command -v brew &>/dev/null; then
-    PKG_MANAGER="brew"
-else
-    PKG_MANAGER="unknown"
-fi
+# ── Detect correct Python ─────────────────────────────────────────────────────
+detect_python() {
+    for candidate in \
+        "$(pwd)/.pythonlibs/bin/python3" \
+        "$HOME/.pythonlibs/bin/python3" \
+        "python3" \
+        "python"; do
+        if [ -x "$candidate" ] || command -v "$candidate" &>/dev/null; then
+            if "$candidate" -c "import sys" &>/dev/null 2>&1; then
+                echo "$candidate"
+                return 0
+            fi
+        fi
+    done
+    echo "python3"
+}
 
-echo -e "\n${YELLOW}[1/5] Checking Python version...${NC}"
-if command -v python3 &>/dev/null; then
-    PY_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-    echo -e "${GREEN}  Python $PY_VERSION found.${NC}"
-    PY_MAJOR=$(python3 -c "import sys; print(sys.version_info.major)")
-    PY_MINOR=$(python3 -c "import sys; print(sys.version_info.minor)")
-    if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 12 ]; }; then
-        echo -e "${RED}  ERROR: Python 3.12+ is required (you have $PY_VERSION).${NC}"
-        echo -e "${YELLOW}  Please install Python 3.12 from https://www.python.org/downloads/${NC}"
-        exit 1
+# Determine pip flags: on NixOS/Replit use --break-system-packages
+detect_pip_flags() {
+    local py="$1"
+    local test_out
+    test_out=$("$py" -m pip install --dry-run pip 2>&1 || true)
+    if echo "$test_out" | grep -q "externally-managed\|EXTERNALLY-MANAGED"; then
+        echo "--break-system-packages"
+    else
+        echo ""
     fi
-else
-    echo -e "${RED}  Python3 not found. Please install Python 3.12+.${NC}"
+}
+
+PYTHON=$(detect_python)
+PIP_FLAGS=$(detect_pip_flags "$PYTHON")
+
+echo -e "${CYAN}  Python: $PYTHON${NC}"
+[ -n "$PIP_FLAGS" ] && echo -e "${CYAN}  Pip flags: $PIP_FLAGS${NC}"
+
+# ── Step 1: Python version ────────────────────────────────────────────────────
+echo -e "\n${YELLOW}[1/4] Checking Python version...${NC}"
+PY_VERSION=$("$PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+PY_MAJOR=$("$PYTHON" -c "import sys; print(sys.version_info.major)")
+PY_MINOR=$("$PYTHON" -c "import sys; print(sys.version_info.minor)")
+echo -e "  ${GREEN}Python $PY_VERSION found.${NC}"
+if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 12 ]; }; then
+    echo -e "  ${RED}ERROR: Python 3.12+ required. You have $PY_VERSION.${NC}"
     exit 1
 fi
 
-echo -e "\n${YELLOW}[2/5] Installing system dependencies (Tesseract, Chromium, Xvfb)...${NC}"
+# ── Step 2: System dependencies ───────────────────────────────────────────────
+echo -e "\n${YELLOW}[2/4] Checking system dependencies...${NC}"
 
-if [ "$OS" = "Linux" ]; then
-    if [ "$PKG_MANAGER" = "apt" ]; then
-        echo -e "${BLUE}  Using apt package manager...${NC}"
-        sudo apt-get update -qq
-        sudo apt-get install -y \
-            tesseract-ocr \
-            chromium-browser \
-            chromium-chromedriver \
-            xvfb \
-            xdotool \
-            libxi6 \
-            libxtst6 \
-            libxrender1 \
-            libxext6 \
-            libx11-6 \
-            scrot \
-            libgl1 \
-            libglu1-mesa \
-            2>/dev/null || \
-        sudo apt-get install -y \
-            tesseract-ocr \
-            chromium \
-            chromedriver \
-            xvfb \
-            xdotool \
-            libxi6 \
-            libxtst6 \
-            2>/dev/null || true
-    elif [ "$PKG_MANAGER" = "dnf" ]; then
-        echo -e "${BLUE}  Using dnf package manager...${NC}"
-        sudo dnf install -y \
-            tesseract \
-            chromium \
-            xorg-x11-server-Xvfb \
-            xdotool \
-            scrot \
-            mesa-libGL \
-            2>/dev/null || true
-    elif [ "$PKG_MANAGER" = "pacman" ]; then
-        echo -e "${BLUE}  Using pacman package manager...${NC}"
-        sudo pacman -S --noconfirm \
-            tesseract \
-            chromium \
-            xorg-server-xvfb \
-            xdotool \
-            scrot \
-            mesa \
-            2>/dev/null || true
-    else
-        echo -e "${YELLOW}  Unknown package manager. Skipping system deps — install manually:${NC}"
-        echo -e "  tesseract-ocr, chromium, chromedriver, xvfb, xdotool, scrot, libGL"
+check_system_dep() {
+    local name="$1" cmd="$2"
+    if command -v "$cmd" &>/dev/null; then
+        echo -e "  ${GREEN}✓ $name: $(command -v $cmd)${NC}"; return 0
     fi
-elif [ "$OS" = "Darwin" ]; then
-    if [ "$PKG_MANAGER" = "brew" ]; then
-        echo -e "${BLUE}  Using Homebrew...${NC}"
-        brew install tesseract chromium 2>/dev/null || true
-    else
-        echo -e "${YELLOW}  Homebrew not found. Install from https://brew.sh/ then re-run this script.${NC}"
+    local nixpath
+    nixpath=$(ls /nix/store 2>/dev/null | grep "^[^-]*-${name}" | head -1)
+    if [ -n "$nixpath" ] && [ -x "/nix/store/$nixpath/bin/$cmd" ]; then
+        echo -e "  ${GREEN}✓ $name (nix store)${NC}"; return 0
     fi
-else
-    echo -e "${YELLOW}  Unsupported OS: $OS — skipping system dependencies.${NC}"
+    echo -e "  ${YELLOW}⚠ $name not found${NC}"; return 1
+}
+
+MISSING_SYS=0
+check_system_dep "tesseract" "tesseract"        || MISSING_SYS=1
+check_system_dep "chromium"  "chromium"         || check_system_dep "chromium" "chromium-browser" || MISSING_SYS=1
+check_system_dep "Xvfb"      "Xvfb"             || MISSING_SYS=1
+
+if [ $MISSING_SYS -eq 1 ]; then
+    echo ""
+    if [ -n "$REPL_ID" ] || [ -d "/nix/store" ]; then
+        echo -e "  ${CYAN}Replit detected: system deps are managed via replit.nix.${NC}"
+    elif [ "$OS" = "Linux" ]; then
+        command -v apt-get &>/dev/null && \
+            echo -e "  ${YELLOW}Run: sudo apt-get install -y tesseract-ocr chromium-browser xvfb${NC}"
+        command -v dnf &>/dev/null && \
+            echo -e "  ${YELLOW}Run: sudo dnf install -y tesseract chromium xorg-x11-server-Xvfb${NC}"
+        command -v pacman &>/dev/null && \
+            echo -e "  ${YELLOW}Run: sudo pacman -S --noconfirm tesseract chromium xorg-server-xvfb${NC}"
+    elif [ "$OS" = "Darwin" ]; then
+        echo -e "  ${YELLOW}Run: brew install tesseract chromium${NC}"
+    fi
 fi
 
-echo -e "${GREEN}  System dependencies done.${NC}"
+# ── Step 3: Python packages ───────────────────────────────────────────────────
+echo -e "\n${YELLOW}[3/4] Installing Python packages...${NC}"
 
-echo -e "\n${YELLOW}[3/5] Upgrading pip & installing Python packages...${NC}"
+# Upgrade pip quietly
+"$PYTHON" -m pip install --upgrade pip -q $PIP_FLAGS 2>/dev/null || true
 
-python3 -m pip install --upgrade pip --quiet
+# Map: "install-name~=version" => "import_name"
+declare -A PKG_IMPORT=(
+    ["selenium"]="selenium"
+    ["pytesseract"]="pytesseract"
+    ["pillow"]="PIL"
+    ["fake_headers"]="fake_headers"
+    ["colorama"]="colorama"
+    ["discordwebhook"]="discordwebhook"
+    ["fake_useragent"]="fake_useragent"
+    ["tqdm"]="tqdm"
+    ["requests"]="requests"
+    ["bs4"]="bs4"
+    ["beautifulsoup4"]="bs4"
+    ["uuid"]="uuid"
+    ["pyperclip"]="pyperclip"
+    ["halo"]="halo"
+    ["websocket-client"]="websocket"
+    ["opencv-python"]="cv2"
+    ["undetected-chromedriver"]="undetected_chromedriver"
+    ["selenium-stealth"]="selenium_stealth"
+    ["pyvirtualdisplay"]="pyvirtualdisplay"
+    ["pyautogui"]="pyautogui"
+    ["python-xlib"]="Xlib"
+    ["setuptools"]="setuptools"
+)
 
-# Clean up duplicates in requirements.txt then install unique packages
-UNIQUE_REQS=$(sort -u requirements.txt | grep -v '^#' | grep -v '^$')
+PACKAGES=(
+    "selenium~=4.23.1"
+    "pytesseract~=0.3.13"
+    "pillow~=10.4.0"
+    "fake_headers"
+    "colorama~=0.4.6"
+    "discordwebhook~=1.0.3"
+    "fake_useragent"
+    "tqdm~=4.66.5"
+    "requests~=2.32.3"
+    "beautifulsoup4~=4.12.3"
+    "pyperclip"
+    "halo"
+    "websocket-client"
+    "opencv-python"
+    "undetected-chromedriver"
+    "selenium-stealth"
+    "pyvirtualdisplay"
+    "pyautogui"
+    "python-xlib"
+    "setuptools"
+)
 
-echo "$UNIQUE_REQS" | while IFS= read -r pkg; do
-    echo -e "  ${BLUE}Installing:${NC} $pkg"
-    python3 -m pip install "$pkg" --quiet 2>/dev/null || \
-    python3 -m pip install "$(echo "$pkg" | sed 's/~=.*//' | sed 's/==.*//' | sed 's/>=//')" --quiet 2>/dev/null || \
-    echo -e "  ${YELLOW}  Warning: Could not install $pkg (may already exist or have conflicts)${NC}"
+patch_uc_distutils() {
+    local uc_patcher
+    uc_patcher=$("$PYTHON" -c "
+import importlib.util, pathlib
+spec = importlib.util.find_spec('undetected_chromedriver')
+if spec: print(pathlib.Path(spec.origin).parent / 'patcher.py')
+" 2>/dev/null)
+    [ -z "$uc_patcher" ] && return
+
+    # Only patch if the bare (unguarded) import still exists — skip if already patched
+    if grep -qP "^from distutils\.version import LooseVersion" "$uc_patcher" 2>/dev/null; then
+        "$PYTHON" - "$uc_patcher" <<'PYEOF'
+import sys, pathlib, re
+p = pathlib.Path(sys.argv[1])
+src = p.read_text()
+bare = "from distutils.version import LooseVersion"
+patched_block = (
+    "try:\n"
+    "    from distutils.version import LooseVersion\n"
+    "except ImportError:\n"
+    "    from packaging.version import Version as _V\n"
+    "    class LooseVersion:\n"
+    "        def __init__(self, v): self.version = str(v); self._v = _V(str(v))\n"
+    "        def __lt__(self, o): return self._v < _V(str(o.version if hasattr(o, 'version') else o))\n"
+    "        def __le__(self, o): return self._v <= _V(str(o.version if hasattr(o, 'version') else o))\n"
+    "        def __gt__(self, o): return self._v > _V(str(o.version if hasattr(o, 'version') else o))\n"
+    "        def __ge__(self, o): return self._v >= _V(str(o.version if hasattr(o, 'version') else o))\n"
+    "        def __eq__(self, o): return self._v == _V(str(o.version if hasattr(o, 'version') else o))"
+)
+# Replace only the bare top-level import line
+new_src = re.sub(r'^from distutils\.version import LooseVersion\s*$',
+                 patched_block, src, count=1, flags=re.MULTILINE)
+if new_src != src:
+    p.write_text(new_src)
+    print("patched")
+else:
+    print("already patched")
+PYEOF
+    else
+        echo "already patched"
+    fi
+}
+
+FAILED_PKGS=()
+for pkg in "${PACKAGES[@]}"; do
+    pkg_name=$(echo "$pkg" | sed 's/[~>=!].*//')
+    import_mod="${PKG_IMPORT[$pkg_name]:-}"
+    printf "  %-36s" "$pkg_name..."
+
+    # If already importable, skip install
+    if [ -n "$import_mod" ] && "$PYTHON" -c "import $import_mod" 2>/dev/null; then
+        echo -e "${GREEN}already installed${NC}"
+        continue
+    fi
+
+    # Try install with version pin
+    if "$PYTHON" -m pip install "$pkg" -q $PIP_FLAGS 2>/dev/null; then
+        echo -e "${GREEN}OK${NC}"
+    elif "$PYTHON" -m pip install "$pkg_name" -q $PIP_FLAGS 2>/dev/null; then
+        echo -e "${YELLOW}OK (latest)${NC}"
+    else
+        echo -e "${RED}FAILED${NC}"
+        FAILED_PKGS+=("$pkg_name")
+    fi
 done
 
-echo -e "${GREEN}  Python packages installed.${NC}"
+# Patch undetected-chromedriver distutils compat (Python 3.12+)
+printf "  %-36s" "patching undetected-chromedriver..."
+patch_uc_distutils
+echo -e "${GREEN}done${NC}"
 
-echo -e "\n${YELLOW}[4/5] Creating required directories...${NC}"
+# ── Step 4: Verify ────────────────────────────────────────────────────────────
+echo -e "\n${YELLOW}[4/4] Verifying installation...${NC}"
 mkdir -p Captcha
-echo -e "${GREEN}  Directories ready.${NC}"
+echo -e "  ${GREEN}✓ Captcha/ directory ready${NC}"
 
-echo -e "\n${YELLOW}[5/5] Verifying installation...${NC}"
-FAILED=0
+FAIL=0
+check_py() {
+    local mod="$1" label="$2"
+    if "$PYTHON" -c "import $mod" 2>/dev/null; then
+        echo -e "  ${GREEN}✓ $label${NC}"
+    else
+        echo -e "  ${RED}✗ $label${NC}"
+        FAIL=1
+    fi
+}
 
-python3 -c "import selenium" 2>/dev/null && echo -e "  ${GREEN}✓ selenium${NC}" || { echo -e "  ${RED}✗ selenium${NC}"; FAILED=1; }
-python3 -c "import cv2" 2>/dev/null && echo -e "  ${GREEN}✓ opencv-python${NC}" || { echo -e "  ${RED}✗ opencv-python${NC}"; FAILED=1; }
-python3 -c "import pytesseract" 2>/dev/null && echo -e "  ${GREEN}✓ pytesseract${NC}" || { echo -e "  ${RED}✗ pytesseract${NC}"; FAILED=1; }
-python3 -c "import PIL" 2>/dev/null && echo -e "  ${GREEN}✓ pillow${NC}" || { echo -e "  ${RED}✗ pillow${NC}"; FAILED=1; }
-python3 -c "import requests" 2>/dev/null && echo -e "  ${GREEN}✓ requests${NC}" || { echo -e "  ${RED}✗ requests${NC}"; FAILED=1; }
-python3 -c "import colorama" 2>/dev/null && echo -e "  ${GREEN}✓ colorama${NC}" || { echo -e "  ${RED}✗ colorama${NC}"; FAILED=1; }
-python3 -c "import undetected_chromedriver" 2>/dev/null && echo -e "  ${GREEN}✓ undetected-chromedriver${NC}" || { echo -e "  ${RED}✗ undetected-chromedriver${NC}"; FAILED=1; }
-python3 -c "import selenium_stealth" 2>/dev/null && echo -e "  ${GREEN}✓ selenium-stealth${NC}" || { echo -e "  ${RED}✗ selenium-stealth${NC}"; FAILED=1; }
-python3 -c "from pyvirtualdisplay import Display" 2>/dev/null && echo -e "  ${GREEN}✓ pyvirtualdisplay${NC}" || { echo -e "  ${RED}✗ pyvirtualdisplay${NC}"; FAILED=1; }
-python3 -c "import fake_useragent" 2>/dev/null && echo -e "  ${GREEN}✓ fake-useragent${NC}" || { echo -e "  ${RED}✗ fake-useragent${NC}"; FAILED=1; }
-
-command -v tesseract &>/dev/null && echo -e "  ${GREEN}✓ tesseract (system)${NC}" || echo -e "  ${YELLOW}  tesseract not in PATH (may be in nix store or /usr/bin)${NC}"
+check_py "selenium"                "selenium"
+check_py "cv2"                     "opencv-python"
+check_py "pytesseract"             "pytesseract"
+check_py "PIL"                     "pillow"
+check_py "requests"                "requests"
+check_py "colorama"                "colorama"
+check_py "undetected_chromedriver" "undetected-chromedriver"
+check_py "selenium_stealth"        "selenium-stealth"
+check_py "pyvirtualdisplay"        "pyvirtualdisplay"
+check_py "fake_useragent"          "fake-useragent"
+check_py "bs4"                     "beautifulsoup4"
+check_py "tqdm"                    "tqdm"
+check_py "halo"                    "halo"
 
 echo ""
-if [ $FAILED -eq 0 ]; then
+if [ ${#FAILED_PKGS[@]} -gt 0 ]; then
+    echo -e "${YELLOW}  Could not install:${NC}"
+    for p in "${FAILED_PKGS[@]}"; do
+        echo -e "    ${RED}- $p${NC}"
+    done
+    echo -e "\n  Retry: ${YELLOW}$PYTHON -m pip install $PIP_FLAGS ${FAILED_PKGS[*]}${NC}"
+fi
+
+echo ""
+if [ $FAIL -eq 0 ] && [ ${#FAILED_PKGS[@]} -eq 0 ]; then
     echo -e "${GREEN}============================================${NC}"
-    echo -e "${GREEN}  All dependencies installed successfully!  ${NC}"
+    echo -e "${GREEN}  ✓ All dependencies installed successfully!${NC}"
     echo -e "${GREEN}============================================${NC}"
-    echo -e "\n${BLUE}Run the program with:${NC}"
-    echo -e "  ${YELLOW}python3 main.py${NC}"
+    echo -e "\n${BLUE}Run the program:${NC} ${YELLOW}python3 main.py${NC}"
 else
     echo -e "${YELLOW}============================================${NC}"
-    echo -e "${YELLOW}  Installation completed with some warnings.${NC}"
-    echo -e "${YELLOW}  Some packages above failed to install.    ${NC}"
+    echo -e "${YELLOW}  Done — check issues above before running.${NC}"
     echo -e "${YELLOW}============================================${NC}"
-    echo -e "\n${BLUE}Try running manually:${NC}"
-    echo -e "  ${YELLOW}python3 -m pip install -r requirements.txt${NC}"
+    echo -e "\n${BLUE}Fallback:${NC} ${YELLOW}$PYTHON -m pip install $PIP_FLAGS -r requirements.txt${NC}"
 fi
