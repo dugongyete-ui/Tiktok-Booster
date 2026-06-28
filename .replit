@@ -28,7 +28,7 @@ outputType = "console"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "python main.py"
+args = "python main.py --url \"https://www.tiktok.com/@dugong.rmx/video/7656229725060205831\""
 
 [deployment]
 deploymentTarget = "vm"

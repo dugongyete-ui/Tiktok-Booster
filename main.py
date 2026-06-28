@@ -3,6 +3,12 @@ import configparser
 import subprocess
 import os
 import sys
+import argparse
+
+_parser = argparse.ArgumentParser(add_help=False)
+_parser.add_argument('--url', type=str, default='')
+_cli_args, _ = _parser.parse_known_args()
+_PRESET_URL = _cli_args.url.strip()
 
 # ── distutils shim (Python 3.12 removed distutils; setuptools provides it) ──
 try:
@@ -170,22 +176,29 @@ class TikTokBooster:
         print(f"{Fore.CYAN}{Style.BRIGHT}{'─' * 50}")
         print(f"  TikTok Booster v{VERSION}")
         print(f"{'─' * 50}{Style.RESET_ALL}\n")
-        print(f"{INFO}Tempel link video TikTok yang ingin di-boost:\n"
-              f"  {Fore.LIGHTBLACK_EX}Contoh: https://www.tiktok.com/@username/video/1234567890{Style.RESET_ALL}\n")
 
         while True:
-            VIDEO = input(f"{Fore.GREEN}➜ {Fore.WHITE}Link Video: {Style.RESET_ALL}").strip()
+            if _PRESET_URL:
+                VIDEO = _PRESET_URL
+                print(f"{INFO}URL: {Fore.WHITE}{VIDEO}{Style.RESET_ALL}")
+            else:
+                print(f"{INFO}Tempel link video TikTok yang ingin di-boost:\n"
+                      f"  {Fore.LIGHTBLACK_EX}Contoh: https://www.tiktok.com/@username/video/1234567890{Style.RESET_ALL}\n")
+                VIDEO = input(f"{Fore.GREEN}➜ {Fore.WHITE}Link Video: {Style.RESET_ALL}").strip()
             if not VIDEO:
                 print(f"{WARNING}Link tidak boleh kosong. Coba lagi.{Style.RESET_ALL}")
                 continue
             if re.match(r'^https://tiktok\.com/', VIDEO):
                 VIDEO = VIDEO.replace('https://tiktok.com/', 'https://www.tiktok.com/')
+            VIDEO = VIDEO.split('?')[0].rstrip('/')
             try:
                 self.tiktok_info = TikTokVideoInfo(VIDEO)
                 print(f"\n{SUCCESS}Link valid! Memproses...{Style.RESET_ALL}\n")
                 break
             except ValueError:
                 print(f"{WARNING}Link tidak valid. Contoh: https://www.tiktok.com/@username/video/123456{Style.RESET_ALL}")
+                if _PRESET_URL:
+                    sys.exit(1)
         self.counter = 0
         self.webhook = WEBHOOK
         self.webhook_text = WEBHOOK
@@ -747,30 +760,95 @@ class TikTokBooster:
         """
         return self.driver.execute_script(script)
 
-    def _js_fill_input(self, value, timeout=10):
-        """Clear and fill the first visible input inside the active Zefoy panel.
-        Skips inputs that are inside a <form> element (those belong to captcha).
-        """
-        script = """
-        var inputs = document.querySelectorAll('input');
-        for (var i = 0; i < inputs.length; i++) {
-            var inp = inputs[i];
+    def _js_dump_inputs(self):
+        """Debug helper — dump all inputs with their type, visibility, and parent context."""
+        return self.driver.execute_script("""
+        var result = [];
+        document.querySelectorAll('input').forEach(function(inp) {
             var st = window.getComputedStyle(inp);
-            if (st.display === 'none' || st.visibility === 'hidden') continue;
-            // Skip inputs inside a <form> — those are captcha fields, not the video URL field
-            var inForm = false;
             var p = inp.parentElement;
-            while (p) {
-                if (p.tagName && p.tagName.toLowerCase() === 'form') { inForm = true; break; }
+            var parents = [];
+            while (p && parents.length < 4) {
+                parents.push((p.tagName||'').toLowerCase() + (p.className ? '.' + p.className.split(' ')[0] : ''));
                 p = p.parentElement;
             }
-            if (inForm) continue;
+            result.push({
+                type: inp.type || '(no type)',
+                display: st.display,
+                visibility: st.visibility,
+                opacity: st.opacity,
+                value: inp.value,
+                placeholder: inp.placeholder,
+                parents: parents.join(' > ')
+            });
+        });
+        return result;
+        """)
+
+    def _js_fill_input(self, value, timeout=10):
+        """Clear and fill the first visible URL-like input inside the active Zefoy panel.
+
+        Three-pass strategy:
+          Pass 1 — non-captcha, non-hidden inputs (all types except hidden/checkbox/radio).
+          Pass 2 — fallback: any visible input including those inside plain forms.
+          Pass 3 — last resort: try even partially-hidden inputs (opacity/clip tricks).
+        """
+        script = """
+        var val = arguments[0];
+
+        function isCaptchaForm(el) {
+            var p = el.parentElement;
+            while (p) {
+                if (p.tagName && p.tagName.toLowerCase() === 'form') {
+                    if (p.querySelector('img, canvas')) return true;
+                    return false;
+                }
+                p = p.parentElement;
+            }
+            return false;
+        }
+
+        function fillInput(inp) {
+            inp.scrollIntoView({block:'center'});
             inp.focus();
-            inp.value = arguments[0];
-            inp.dispatchEvent(new Event('input', {bubbles: true}));
+            inp.value = val;
+            inp.dispatchEvent(new Event('input',  {bubbles: true}));
             inp.dispatchEvent(new Event('change', {bubbles: true}));
+            inp.dispatchEvent(new KeyboardEvent('keyup', {bubbles: true}));
             return inp;
         }
+
+        var skipTypes = ['hidden', 'checkbox', 'radio', 'file', 'submit', 'button', 'reset', 'image'];
+        var inputs = Array.from(document.querySelectorAll('input'));
+
+        // Pass 1: non-captcha, fully visible
+        for (var i = 0; i < inputs.length; i++) {
+            var inp = inputs[i];
+            if (skipTypes.indexOf((inp.type||'').toLowerCase()) !== -1) continue;
+            var st = window.getComputedStyle(inp);
+            if (st.display === 'none' || st.visibility === 'hidden') continue;
+            if (isCaptchaForm(inp)) continue;
+            return fillInput(inp);
+        }
+
+        // Pass 2: any visible input (including captcha-form ones)
+        for (var i = 0; i < inputs.length; i++) {
+            var inp = inputs[i];
+            if (skipTypes.indexOf((inp.type||'').toLowerCase()) !== -1) continue;
+            var st = window.getComputedStyle(inp);
+            if (st.display === 'none' || st.visibility === 'hidden') continue;
+            return fillInput(inp);
+        }
+
+        // Pass 3: try inputs that might have opacity:0 or are off-screen
+        for (var i = 0; i < inputs.length; i++) {
+            var inp = inputs[i];
+            if (skipTypes.indexOf((inp.type||'').toLowerCase()) !== -1) continue;
+            var st = window.getComputedStyle(inp);
+            if (st.display === 'none') continue;
+            return fillInput(inp);
+        }
+
         return null;
         """
         deadline = time.time() + timeout
@@ -1136,7 +1214,7 @@ class TikTokBooster:
         while retries < max_retries:
             try:
                 if self._click_type_button():
-                    time.sleep(0.3)
+                    time.sleep(2.0)
                     self._get_views()
                     break
                 else:
@@ -1223,6 +1301,8 @@ class TikTokBooster:
                     except Exception:
                         pass
                 if not filled:
+                    all_inputs = self._js_dump_inputs()
+                    print(f"{WARNING}[DEBUG] Inputs on page after click: {all_inputs}{Style.RESET_ALL}")
                     raise NoSuchElementException("Could not fill video URL input")
                 print(f"{INFO}[Step 1] URL filled ✔{Style.RESET_ALL}")
 
