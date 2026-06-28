@@ -1,4 +1,5 @@
-import os,sys
+import os, sys, shutil, subprocess
+
 try:
     from fake_useragent import UserAgent
 except ImportError:
@@ -6,11 +7,29 @@ except ImportError:
     os.system("pip install -r requirements.txt")
     print('Libraries installed. Restart the program!')
     sys.exit()
-class Static(): 
+
+def _find_binary(names):
+    for name in names:
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
+
+def _detect_chrome_major_version(binary_path):
+    try:
+        result = subprocess.run(
+            [binary_path, "--version"],
+            capture_output=True, text=True, timeout=5
+        )
+        version_str = result.stdout.strip().split()[1]
+        return int(version_str.split('.')[0])
+    except Exception:
+        return 138
+
+class Static():
     typeValues = {
         'followers' : '/html/body/div[6]/div/div[2]/div/div/div[2]/div/button',
         'views' : '/html/body/div[6]/div/div[2]/div/div/div[5]/div/button',
-        # 'commenthearts' : '/html/body/div[6]/div/div[2]/div/div/div[4]/div/button', broken!!!
         'favorites': '/html/body/div[6]/div/div[2]/div/div/div[7]/div/button',
         'shares' : '/html/body/div[6]/div/div[2]/div/div/div[6]/div/button',
         'hearts' : '/html/body/div[6]/div/div[2]/div/div/div[3]/div/button',
@@ -58,6 +77,21 @@ class Static():
         'hearts' : '//*[@id="c2VuZE9nb2xsb3dlcnNfdGlrdG9r"]/div[1]/div/form/button',
         'repost':'//*[@id="c2VuZF9mb2xsb3dlcnNfdGlrdG9Z"]/div[1]/div/form/button'
     }
-    ChromeOptions = ["--window-size=1920,1080","--disable-gpu","--incognito",f"user-agent={UserAgent().random}","--no-sandbox","--enable-unsafe-swiftshader","--log-level=3","--disable-dev-shm-usage"]
-    ChromeBinaryPath = "/nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium"
-    ChromeDriverPath = "/nix/store/8zj50jw4w0hby47167kqqsaqw4mm5bkd-chromedriver-unwrapped-138.0.7204.100/bin/chromedriver"
+    ChromeOptions = [
+        "--window-size=1920,1080", "--disable-gpu", "--incognito",
+        f"user-agent={UserAgent().random}", "--no-sandbox",
+        "--enable-unsafe-swiftshader", "--log-level=3", "--disable-dev-shm-usage"
+    ]
+
+    ChromeBinaryPath = (
+        _find_binary(["chromium", "chromium-browser", "google-chrome-stable", "google-chrome"])
+        or "/usr/bin/chromium"
+    )
+    ChromeDriverPath = (
+        _find_binary(["chromedriver"])
+        or "/usr/bin/chromedriver"
+    )
+    ChromeMajorVersion = _detect_chrome_major_version(
+        _find_binary(["chromium", "chromium-browser", "google-chrome-stable", "google-chrome"])
+        or "chromium"
+    )

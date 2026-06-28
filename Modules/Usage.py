@@ -1,15 +1,15 @@
 import json
-import sys,os
+import sys, os
 import configparser
 import time
 try:
     import hashlib
     import subprocess
-    import requests,os
+    import requests, os
     import zipfile
-    from datetime import datetime,timedelta
+    from datetime import datetime, timedelta
     import shutil
-    from colorama import Fore,Style
+    from colorama import Fore, Style
     import colorama
     from tqdm import tqdm
     import tempfile
@@ -21,34 +21,29 @@ except ImportError:
     os.system("pip install -r requirements.txt")
     print('Libraries installed. Restart the program!')
     sys.exit()
+
 class ProgramUsage():
+    _trans_cache = {}
+    _trans_lang = None
+
     def check_video(VIDEO):
         """
         Check if the video is a 'vm' or 'www' type
-        
+
         Parameters
         ----------
         - VIDEO : str
             - Tiktok Video URL
-        
+
         Returns
         -------
         - vm
             - if Video URL starts with vm
-        - www 
+        - www
             - if Video URL starts with www
-
-        Example
-        -------
-
-        >>> check_video("https://www.tiktok.com/@****/video/****")
-            'www'
-        >>> check_video("https://vm.tiktok.com/****)
-            'vm'
         """
-
         return "vm" if VIDEO.split("/")[2].__contains__("vm") else "www"
-    
+
     def get_vmid(VIDEO):
         """
         Get the video ID from the URL
@@ -57,39 +52,41 @@ class ProgramUsage():
         ----------
         - VIDEO : str
             - Tiktok Video URL
-        
+
         Returns
         -------
         - str
             - Returns video ID based on the Video URL provided.
-        - None 
+        - None
             - if no Video ID was found.
         """
-
-        response = requests.post("https://countik.com/api/video/exist", json={'url': f"{VIDEO}"}).json()
         try:
+            response = requests.post(
+                "https://countik.com/api/video/exist",
+                json={'url': f"{VIDEO}"},
+                timeout=10
+            ).json()
             return response['id']
         except KeyError:
             print(f"{Fore.RED}[Warning] Unable to get Video ID{Style.RESET_ALL}")
             return None
-        
-    def convert_hours(hours = 'ind',sec = 'ind'):
+        except Exception as e:
+            print(f"{Fore.RED}[Warning] get_vmid error: {e}{Style.RESET_ALL}")
+            return None
+
+    def convert_hours(hours='ind', sec='ind'):
         """
         Convert hours or seconds into HH:MM:SS format
-        
+
         Parameters
         ----------
         - hours : int (or 'ind' if nothing is passed)
-            - Amount of hours to transform in hhmmss
         - seconds : int (or 'ind' if nothing is passed)
-            - Amount of seconds to transform in hhmmss 
-        
+
         Returns
         -------
-        - str
-            - the hhmmss based on the parameter passed.
+        - str : the hhmmss based on the parameter passed.
         """
-
         if hours == 'ind':
             td = timedelta(seconds=sec)
         else:
@@ -97,18 +94,16 @@ class ProgramUsage():
 
         hours, remainder = divmod(td.seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
-        
-        hhmmss = f"{hours:02}:{minutes:02}:{seconds:02}"
-        
-        return hhmmss
-    
+        return f"{hours:02}:{minutes:02}:{seconds:02}"
+
     def get_numeric_value(value):
         """Convert a value to an integer, returning 0 if conversion fails"""
         try:
             return int(value)
-        except ValueError:
+        except (ValueError, TypeError):
             return 0
-    def download(INFO:colorama,WAITING:colorama,SUCCESS:colorama,WARNING:colorama,download_url, destination='.'):
+
+    def download(INFO: colorama, WAITING: colorama, SUCCESS: colorama, WARNING: colorama, download_url, destination='.'):
         """Download and extract a file from the given URL"""
         if "1zzIcdY50OwbgxM3NMINmdmzHI5oEdnJA" in download_url:
             print(f'{INFO}{Fore.WHITE}Downloading new version, please wait...{Style.RESET_ALL}')
@@ -144,8 +139,9 @@ class ProgramUsage():
                         with os.scandir(entry) as entries_folder:
                             for entry_folder in entries_folder:
                                 try:
-                                    os.replace(f"{os.curdir}/Tiktok-Booster-Update/{entry.name}/{entry_folder.name}",
-                                            f"./{entry.name}/{entry_folder.name}")
+                                    os.replace(
+                                        f"{os.curdir}/Tiktok-Booster-Update/{entry.name}/{entry_folder.name}",
+                                        f"./{entry.name}/{entry_folder.name}")
                                 except Exception as e:
                                     print(e)
                                 continue
@@ -157,15 +153,17 @@ class ProgramUsage():
                         continue
             shutil.rmtree(f'{os.curdir}/Tiktok-Booster-Update')
         print(f'{SUCCESS}{Fore.WHITE}{"New Version" if "1zzIcdY50OwbgxM3NMINmdmzHI5oEdnJA" in download_url else "Tesseract"}'
-            f' Downloaded and Extracted Successfully!{Style.RESET_ALL}')
+              f' Downloaded and Extracted Successfully!{Style.RESET_ALL}')
         print(f'{WARNING}{Fore.WHITE}Please Restart the program!{Style.RESET_ALL}')
-    def Activate(sha256_hash,file_path,UUID):
+
+    def Activate(sha256_hash, file_path, UUID):
         try:
-            response = requests.get(f"https://sneezedip.pythonanywhere.com/get_key?uuid={UUID}", timeout=10).json()
+            response = requests.get(
+                f"https://sneezedip.pythonanywhere.com/get_key?uuid={UUID}", timeout=10
+            ).json()
             key_text = response.get('response', 'N/A')
         except Exception:
             key_text = 'N/A (server unavailable)'
-            response = {'response': key_text}
         print(f'{Style.BRIGHT}{Fore.RED}[Program not Activated]{Style.RESET_ALL}\n')
         print(f'''{Fore.RED} This program is free of use, but you need an activation key to continue!{Style.RESET_ALL}
 {Fore.YELLOW}Please join https://discord.gg/nAa5PyxubF and go to the \'get-key\' channel\n {Style.RESET_ALL}''')
@@ -178,24 +176,28 @@ class ProgramUsage():
         while True:
             activation = input(f"{Fore.YELLOW}[Waiting] {Fore.WHITE}Please enter Activation Key >>> ")
             try:
-                validate_response = requests.get(f"https://sneezedip.pythonanywhere.com/validate_activation?uuid={UUID}&key={activation}", timeout=10)
+                validate_response = requests.get(
+                    f"https://sneezedip.pythonanywhere.com/validate_activation?uuid={UUID}&key={activation}",
+                    timeout=10
+                )
                 validate_json = validate_response.json()
             except Exception:
                 print(f"{Fore.RED}Could not reach activation server. Please try again.{Style.RESET_ALL}")
                 continue
             spinner = Halo(text="Verifying key", spinner="dots")
             spinner.start()
-            time.sleep(2)  # Simulate key verification delay
+            time.sleep(2)
             if 'Valid Key!' in validate_json.get('response', ''):
                 spinner.succeed("Key Verified! Access Granted!")
-                with open(file_path,"w")as file:
+                with open(file_path, "w") as file:
                     file.write(activation)
-                return True 
+                return True
             else:
                 spinner.fail("Invalid Key. Please try again.")
-            
+
     def vk():
-        return True  
+        return True
+
     def change_video_url(new_url):
         content = []
         with open("config.cfg", "r") as file:
@@ -206,6 +208,7 @@ class ProgramUsage():
                     content.append(line)
         with open("config.cfg", "w") as file:
             file.writelines(content)
+
     def save_or_replace_history(video_id, creator, views_before, views_after, likes, shares):
         new_entry = {
             "video_id": video_id,
@@ -216,7 +219,6 @@ class ProgramUsage():
             "shares": shares,
             "last_time_used": f"{datetime.now().year}/{datetime.now().month}/{datetime.now().day}"
         }
-
         try:
             with open("history.json", "r") as file:
                 history_data = json.load(file)
@@ -232,48 +234,45 @@ class ProgramUsage():
 
         with open("history.json", "w") as file:
             json.dump(history_data, file, indent=4)
-    
+
     def get_history():
-        history = []
         try:
             with open("history.json", "r", encoding="utf-8") as file:
                 history_data = json.load(file)
         except FileNotFoundError:
             return None
-        for info in history_data["history"]:
-            history.append(info)
+        history = [info for info in history_data["history"]]
         return history if len(history) > 0 else None
-                
-    def Translations(section,id):
+
+    def Translations(section, id):
         config = configparser.ConfigParser()
         config.read('config.cfg')
-        with open("languages.json" , "r", encoding="utf-8") as file:
-            json_data = file.read()
-        data = json.loads(json_data)
-        translation_language = data["translations"][config.get('Settings', 'LANGUAGE')]
-        credits = translation_language[0]["credits"]
-        updates = translation_language[0]["updates"]
-        history = translation_language[0]["history"]
-        errors = translation_language[0]["errors"]
-        main = translation_language[0]["main"]
-        match section:
-            case "credits": return next(item["text"] for item in credits if item["id"] == id) 
-            case "updates": return next(item["text"] for item in updates if item["id"] == id) 
-            case "history": return next(item["text"] for item in history if item["id"] == id) 
-            case "errors": return next(item["text"] for item in errors if item["id"] == id) 
-            case "main": return next(item["text"] for item in main if item["id"] == id) 
+        lang = config.get('Settings', 'LANGUAGE')
+
+        if ProgramUsage._trans_lang != lang:
+            ProgramUsage._trans_lang = lang
+            ProgramUsage._trans_cache = {}
+            with open("languages.json", "r", encoding="utf-8") as file:
+                data = json.loads(file.read())
+            translation_language = data["translations"][lang]
+            for item_section in ["credits", "updates", "history", "errors", "main"]:
+                for item in translation_language[0].get(item_section, []):
+                    ProgramUsage._trans_cache[f"{item_section}:{item['id']}"] = item["text"]
+
+        return ProgramUsage._trans_cache.get(f"{section}:{id}", "")
+
     def gfh(file_path):
         sha256_hash = hashlib.sha256()
         with open(file_path, "rb") as f:
             for byte_block in iter(lambda: f.read(4096), b""):
                 sha256_hash.update(byte_block)
         return sha256_hash.hexdigest()
-    
+
     def is_down():
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
         }
-        print(requests.get("https://zefoy.com/").text)
-        return True if requests.get("https://zefoy.com/", headers=headers).status_code != 200 else False
-                                                                                 
-# ProgramUsage.is_down()
+        try:
+            return requests.get("https://zefoy.com/", headers=headers, timeout=10).status_code != 200
+        except Exception:
+            return True

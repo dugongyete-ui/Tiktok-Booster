@@ -101,49 +101,6 @@ def show_credits():
           f"https://discord.gg/nAa5PyxubF{Style.RESET_ALL}")
 
 
-def download_extension() -> str:
-    temp_dir = os.path.join(tempfile.gettempdir(), "extension_cache")
-    os.makedirs(temp_dir, exist_ok=True)
-    extension_path = os.path.join(temp_dir, "extension.crx")
-
-    if os.path.exists(extension_path) and os.path.getsize(extension_path) > 0:
-        return extension_path
-
-    try:
-        response = requests.get(
-            "https://scmultitool.netlify.app/AdBlocker.crx", timeout=10)
-        response.raise_for_status()
-
-        with open(extension_path, "wb") as file:
-            file.write(response.content)
-        return extension_path
-    except requests.RequestException as e:
-        raise Exception(f"Failed to download extension: {str(e)}")
-    
-def download_and_extract_extension() -> str:
-    """Downloads and extracts the Chrome extension to a folder."""
-    temp_dir = os.path.join(tempfile.gettempdir(), "extension_cache")
-    os.makedirs(temp_dir, exist_ok=True)
-
-    extension_crx = os.path.join(temp_dir, "extension.crx")
-    extension_folder = os.path.join(temp_dir, "AdBlocker")
-
-    if os.path.exists(extension_folder):
-        return extension_folder
-
-    response = requests.get("https://scmultitool.netlify.app/AdBlocker.crx")
-    if response.status_code == 200:
-        with open(extension_crx, "wb") as file:
-            file.write(response.content)
-    else:
-        raise Exception(
-            f"Failed to download extension, status code: {response.status_code}")
-
-    with zipfile.ZipFile(extension_crx, "r") as zip_ref:
-        zip_ref.extractall(extension_folder)
-
-    return extension_folder
-    
 def parse_cooldown(text):
     """Parse cooldown time from text"""
     minutes = 0
@@ -272,8 +229,8 @@ class TikTokBooster:
             try:
                 self.webhook = Discord(url=WEBHOOK)
                 self.webhook.post(content="Tiktok-Booster Started!") # Quick check
-                self.is_webhook_valid = True    
-            except:
+                self.is_webhook_valid = True
+            except Exception:
                 self.is_webhook_valid = False
                 # print(f"{WARNING}Webhook inválido, desabilitado{Style.RESET_ALL}")
         else:
@@ -283,6 +240,7 @@ class TikTokBooster:
         if not SKIP_WEBHOOK_VERIFICATION and self.is_webhook_valid:
             self._menu()
         self.index = 0
+        self.video = VIDEO
         self.video_id = VIDEO.split("/")[5] if ProgramUsage.check_video(VIDEO) == "www" else ProgramUsage.get_vmid(VIDEO)
         self.initial_views = self._get_initial_views()
 
@@ -357,7 +315,7 @@ class TikTokBooster:
                 options=uc_options,
                 driver_executable_path=driver_path,
                 use_subprocess=False,
-                version_main=138,
+                version_main=Static.ChromeMajorVersion,
             )
             self.driver = _uc_driver
             self._use_uc = True
@@ -1033,7 +991,7 @@ class TikTokBooster:
                 ec.presence_of_element_located((By.XPATH, '//*[@id="qewarjh"]/div/div/div[3]/button'))):
                 self.driver.refresh()
                 return False
-        except:
+        except Exception:
             pass
 
         if submit_btn is None:
@@ -1073,54 +1031,16 @@ class TikTokBooster:
             (By.CLASS_NAME, 'btn btn-secondary col-sm'),  # New captcha button
             (By.XPATH, '//*[@id="qewarjh"]/div/div/div[3]/button')
         ]
-        for by,selector in fail_selectors:
+        for by, selector in fail_selectors:
             try:
-                WebDriverWait(self.driver,SLEEP).until(
+                WebDriverWait(self.driver, SLEEP).until(
                     ec.presence_of_element_located((by, selector))
                 )
                 self.driver.refresh()
                 return False
-            except:
+            except Exception:
                 continue
         return True
-        
-        # Multiple fail indicators
-        # fail_selectors = [
-        #     (By.CLASS_NAME, 'btn btn-secondary col-sm'),  # New captcha button
-        #     (By.XPATH, '/html/body/div[5]/div[2]/form'),  # Captcha form still present
-        #     (By.XPATH, '/html/body/div[5]/div[2]/form/div/div/img')  # Captcha image
-        # ]
-        
-        # for by, selector in fail_selectors:
-        #     try:
-        #         WebDriverWait(self.driver, 3).until(ec.presence_of_element_located((by, selector)))
-        #         print(f"{Fore.RED}❌ Captcha fail detected: {selector} – closing...{Style.RESET_ALL}")
-        #         close_btn = self.driver.find_element(by, selector)
-        #         self.driver.execute_script("arguments[0].click();", close_btn)
-        #         print(f"{Fore.YELLOW}🔄 Closed error modal, screenshot for debug{Style.RESET_ALL}")
-        #         self.driver.save_screenshot('Captcha/debug_fail.png')
-        #         time.sleep(2)
-        #         return False
-        #     except Exception as e:
-        #         return True
-        #     except TimeoutException:
-        #         continue
-        
-        # Conservative success: if no fail selectors + any button visible
-        # try:
-        #     any_type_btn = WebDriverWait(self.driver, 8).until(
-        #         ec.any_of(
-        #             ec.presence_of_element_located((By.XPATH, Static.typeValues.get('views', '//button'))),
-        #             ec.presence_of_element_located((By.XPATH, Static.typeValues.get('hearts', '//button')))
-        #         ))
-        #     print(f"{Fore.GREEN}✅ Captcha passed: buttons visible ({any_type_btn.tag_name}){Style.RESET_ALL}")
-        # except TimeoutException:
-        #     print(f"{Fore.YELLOW}⚠️ No type buttons yet, but no fail modals = assuming PASS{Style.RESET_ALL}")
-        
-        # self.remove_modal()  # Final modal clean
-        # print(f"{Fore.GREEN}🎉 Captcha verification complete: FULL PASS!{Style.RESET_ALL}")
-        # return True
-        
 
     def _reset_browser(self):
         self.User_Session.send_heartbeat()
@@ -1321,7 +1241,7 @@ class TikTokBooster:
 
                 # ── Step 1: fill the video URL input ──────────────────────────
                 print(f"{INFO}[Step 1] Filling video URL via JS DOM…{Style.RESET_ALL}")
-                filled = self._js_fill_input(VIDEO, timeout=20)
+                filled = self._js_fill_input(self.video, timeout=20)
                 if not filled:
                     # Try XPATH fallback
                     try:
@@ -1329,7 +1249,7 @@ class TikTokBooster:
                             ec.presence_of_element_located(
                                 (By.XPATH, Static.firstStep[TYPE])))
                         el.clear()
-                        el.send_keys(VIDEO)
+                        el.send_keys(self.video)
                         filled = True
                     except Exception:
                         pass
@@ -1359,7 +1279,7 @@ class TikTokBooster:
                         self._click_type_button()
                         time.sleep(1)
                         # Re-fill URL
-                        self._js_fill_input(VIDEO, timeout=15)
+                        self._js_fill_input(self.video, timeout=15)
 
                     # Only clear screen when not headless (so logs aren't wiped)
                     if not AUTO_START and os.name == 'nt':
@@ -1559,7 +1479,7 @@ class TikTokBooster:
                         pass
                     else:
                         break
-            except:
+            except Exception:
                 pass
         type_map = {1: 'views', 2: 'followers', 3: 'favorites', 4: 'shares', 5: 'hearts', 6: 'repost'}
         if us == 99:
@@ -1602,7 +1522,7 @@ class TikTokBooster:
 
     def _show_banner(self, index):
         """Show the progress banner"""
-        temp = TikTokVideoInfo(VIDEO)
+        temp = TikTokVideoInfo(self.video)
         ProgramUsage.save_or_replace_history(self.video_id,InitialInfo.CREATOR,InitialInfo.VIEWS_BEFORE,ProgramUsage.get_numeric_value(temp.get_video_info(Views=True)),ProgramUsage.get_numeric_value(temp.get_video_info(Likes=True)),ProgramUsage.get_numeric_value(temp.get_video_info(Shares=True)))
         if TYPE == 'views':
             views = ProgramUsage.get_numeric_value(temp.get_video_info(Views=True))
