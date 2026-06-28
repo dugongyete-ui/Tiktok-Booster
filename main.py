@@ -163,60 +163,29 @@ class TikTokBooster:
         #     sys.exit()
         self.User_Session = Session(VERSION)
         self.User_Session.send_heartbeat()
-        self.history_selected = None
         global VIDEO
         self.elements = []
-        while True:
-            self.history = ProgramUsage.get_history()
-            if not self.history:
-                break
-            else:
-                print(f"\n{Fore.YELLOW}{ProgramUsage.Translations("history",0)}{Fore.RESET}")
-                
-                for index, record in enumerate(self.history, start=1):
-                    if isinstance(record, dict):
-                        print(f"\n{Fore.CYAN}[{index}] {Fore.WHITE}{Style.BRIGHT}Video Link: {Style.RESET_ALL}https://www.tiktok.com/@{record["creator"]}/video/{record["video_id"]}\n"
-                            f"{Fore.WHITE}{Style.BRIGHT}Creator: {Style.RESET_ALL}{record['creator']} \n"
-                            f"{Fore.WHITE}{Style.BRIGHT}Views: {Style.RESET_ALL}{Fore.LIGHTYELLOW_EX}{record['views_before']} {Fore.WHITE}-> {Fore.GREEN}{record['views_after']} {Fore.RESET}\n"
-                            f"{Fore.WHITE}{Style.BRIGHT}Last Time Used: {Style.RESET_ALL}{record['last_time_used']}{Fore.RESET}")
-                        
-                if AUTO_START:
-                    print(f"{INFO}AUTO_START enabled — skipping history selection, using config URL.{Style.RESET_ALL}")
-                    self.history_selected = False
-                    VIDEO = ""
-                    break
 
-                try:
-                    choice = int(input(f"\n{ProgramUsage.Translations("history",1)}{Fore.RED} {ProgramUsage.Translations("history",2)} {Style.RESET_ALL}"))
-                    if choice == 0:
-                        self.history_selected = False
-                        VIDEO = ""
-                        break
-                    if 1 <= choice <= len(self.history):
-                        self.history_selected = True
-                        VIDEO = f"https://www.tiktok.com/@{self.history[choice - 1]["creator"]}/video/{self.history[choice - 1]["video_id"]}"
-                        break
-                    else:
-                        print(f"{ProgramUsage.Translations("errors",0)}")
-                except ValueError:
-                    print(f"{ProgramUsage.Translations("errors",1)}")
-        # If user did not pick from history, check config or ask for URL
-        if self.history_selected is not True:
-            config_url = config.get('Settings', 'VIDEO_URL').strip()
-            if config_url:
-                VIDEO = config_url
-                print(f"{INFO}Using URL from config: {Fore.WHITE}{VIDEO}{Style.RESET_ALL}")
-            else:
-                VIDEO = input(f"{Fore.BLUE}Enter TikTok Video URL -> {Fore.WHITE}").strip()
+        os.system("cls") if os.name == 'nt' else os.system("clear")
+        print(f"{Fore.CYAN}{Style.BRIGHT}{'─' * 50}")
+        print(f"  TikTok Booster v{VERSION}")
+        print(f"{'─' * 50}{Style.RESET_ALL}\n")
+        print(f"{INFO}Tempel link video TikTok yang ingin di-boost:\n"
+              f"  {Fore.LIGHTBLACK_EX}Contoh: https://www.tiktok.com/@username/video/1234567890{Style.RESET_ALL}\n")
 
         while True:
+            VIDEO = input(f"{Fore.GREEN}➜ {Fore.WHITE}Link Video: {Style.RESET_ALL}").strip()
+            if not VIDEO:
+                print(f"{WARNING}Link tidak boleh kosong. Coba lagi.{Style.RESET_ALL}")
+                continue
+            if re.match(r'^https://tiktok\.com/', VIDEO):
+                VIDEO = VIDEO.replace('https://tiktok.com/', 'https://www.tiktok.com/')
             try:
                 self.tiktok_info = TikTokVideoInfo(VIDEO)
+                print(f"\n{SUCCESS}Link valid! Memproses...{Style.RESET_ALL}\n")
                 break
             except ValueError:
-                os.system("cls") if os.name == 'nt' else os.system("clear")
-                print(f"{WARNING}Invalid URL. Example: https://www.tiktok.com/@username/video/123456{Style.RESET_ALL}")
-                VIDEO = input(f"{Fore.BLUE}Enter TikTok Video URL -> {Fore.WHITE}").strip()
+                print(f"{WARNING}Link tidak valid. Contoh: https://www.tiktok.com/@username/video/123456{Style.RESET_ALL}")
         self.counter = 0
         self.webhook = WEBHOOK
         self.webhook_text = WEBHOOK
